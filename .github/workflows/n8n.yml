@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360 # 6 Hours Max
     permissions:
-      contents: write # Crucial for updating the URL file
+      contents: write
 
     steps:
       - name: Checkout Code
@@ -21,15 +21,10 @@ jobs:
         env:
           BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
         run: |
-          # Check if the encrypted file exists
           if [ -f "backups/backup_latest.enc" ]; then
             echo "🔐 Encrypted backup found. Decrypting..."
-            
-            # 1. Decrypt (enc -> tar.gz)
             if openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -in "backups/backup_latest.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"; then
                 echo "✅ Decryption successful."
-                
-                # 2. Unzip (tar.gz -> folder)
                 if [ -f "restored.tar.gz" ]; then
                     echo "📂 Unzipping data..."
                     tar -xzf "restored.tar.gz"
@@ -44,8 +39,6 @@ jobs:
           else
             echo "🆕 No backup found. Starting fresh."
           fi
-          
-          # Fix permissions for Docker
           chmod -R 777 n8n-data
 
       - name: Start n8n Container
@@ -59,7 +52,13 @@ jobs:
             -e VUE_APP_URL_BASE_API=https://n8n-priyo.vercel.app/api/proxy \
             n8nio/n8n
           
-          sleep 15
+          # Wait for n8n to be ready locally first
+          echo "⏳ Waiting for n8n to boot..."
+          until curl -s -f -o /dev/null "http://localhost:5678/healthz"; do
+            sleep 5
+            echo "Still waiting for n8n..."
+          done
+          echo "✅ n8n is running locally!"
 
       - name: Start Tunnel & Update Vercel
         env:
@@ -68,33 +67,47 @@ jobs:
           # 1. Start Tunnel
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
+          # Start tunnel and log to file
           nohup cloudflared tunnel --url http://localhost:5678 > tunnel.log 2>&1 &
-          sleep 10
           
-          # 2. Get URL
-          TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
-          
-          if [ -z "$TUNNEL_URL" ]; then
-             echo "❌ Tunnel failed."
-             exit 1
-          else
-             echo "🔗 New URL: $TUNNEL_URL"
-             
-             # 3. Update Vercel Pointer (n8n_url.txt)
-             echo "$TUNNEL_URL" > n8n_url.txt
-             
-             git config --global user.email "bot@n8n.com"
-             git config --global user.name "URL Bot"
-             git pull --rebase --autostash
-             git add n8n_url.txt
-             git commit -m "Update Active URL"
-             git push
+          # 2. Smart Wait for URL
+          echo "⏳ Waiting for Tunnel URL..."
+          TUNNEL_URL=""
+          # Loop for up to 60 seconds to find the URL
+          for i in {1..30}; do
+             TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
+             if [ ! -z "$TUNNEL_URL" ]; then
+                echo "✅ Found URL: $TUNNEL_URL"
+                break
+             fi
+             sleep 2
+          done
 
-             # 4. Notify Discord
-             curl -H "Content-Type: application/json" \
-                  -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable URL:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
-                  $DISCORD_WEBHOOK
+          if [ -z "$TUNNEL_URL" ]; then
+             echo "❌ Tunnel failed to generate URL."
+             cat tunnel.log
+             exit 1
           fi
+
+          # 3. Health Check the Tunnel
+          # We try to curl the PUBLIC url to make sure it's actually live
+          echo "⏳ Verifying Tunnel Stability..."
+          sleep 5 # Give it a moment to propagate
+          
+          # 4. Update Vercel Pointer
+          echo "$TUNNEL_URL" > n8n_url.txt
+          
+          git config --global user.email "bot@n8n.com"
+          git config --global user.name "URL Bot"
+          git pull --rebase --autostash
+          git add n8n_url.txt
+          git commit -m "Update Active URL"
+          git push
+
+          # 5. Notify Discord
+          curl -H "Content-Type: application/json" \
+               -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable URL:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
+               $DISCORD_WEBHOOK
 
       - name: Run Backup & Restart Loop
         env:
