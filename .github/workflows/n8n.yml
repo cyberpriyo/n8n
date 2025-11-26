@@ -1,14 +1,14 @@
 name: n8n-hosting
 
 on:
-  workflow_dispatch: # Allows manual start and restart via script
+  workflow_dispatch: # Allows manual start
 
 jobs:
   run-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # Max allowed by GitHub
+    timeout-minutes: 360 # 6 Hours Max
     permissions:
-      contents: write # Required to push backups
+      contents: write # Crucial for updating the URL file
 
     steps:
       - name: Checkout Code
@@ -20,64 +20,67 @@ jobs:
       - name: Restore Latest Backup
         run: |
           if [ -d "backups" ] && [ "$(ls -A backups)" ]; then
-            echo "📂 Backups found. Restoring the latest one..."
-            # Get the latest tar.gz file
+            echo "📂 Backups found. Restoring..."
             LATEST_BACKUP=$(ls -t backups/*.tar.gz | head -n 1)
-            echo "Restoring from: $LATEST_BACKUP"
             tar -xzf "$LATEST_BACKUP"
-            echo "✅ Restore complete."
           else
-            echo "🆕 No backups found. Starting fresh instance."
+            echo "🆕 Starting fresh instance."
           fi
-          # Set permissions so Docker can write to it
           chmod -R 777 n8n-data
 
       - name: Start n8n Container
+        # REPLACE THE URL BELOW WITH YOUR VERCEL DOMAIN
         run: |
           docker run -d \
             --name n8n \
             -p 5678:5678 \
             -v $(pwd)/n8n-data:/home/node/.n8n \
             -e N8N_SECURE_COOKIE=false \
+            -e WEBHOOK_URL=https://n8n-priyo.vercel.app/api/proxy \
+            -e VUE_APP_URL_BASE_API=https://n8n-priyo.vercel.app/api/proxy \
             n8nio/n8n
           
-          echo "Waiting for n8n to boot..."
           sleep 15
 
-      - name: Start Tunnel & Notify Discord
+      - name: Start Tunnel & Update Vercel
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          # 1. Install Cloudflared
+          # 1. Start Tunnel
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
-
-          # 2. Run Tunnel
-          # We output to a log file so we can scrape the URL
           nohup cloudflared tunnel --url http://localhost:5678 > tunnel.log 2>&1 &
-          
-          echo "Waiting for Tunnel URL to generate..."
           sleep 10
           
-          # 3. Extract URL
+          # 2. Get URL
           TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
           
           if [ -z "$TUNNEL_URL" ]; then
-             echo "❌ Failed to get URL. Logs:"
-             cat tunnel.log
+             echo "❌ Tunnel failed."
+             exit 1
           else
-             echo "🔗 Generated URL: $TUNNEL_URL"
+             echo "🔗 New URL: $TUNNEL_URL"
              
-             # 4. Send to Discord
-             # Uses a nice embed format
+             # 3. Update Vercel Pointer (n8n_url.txt)
+             echo "$TUNNEL_URL" > n8n_url.txt
+             
+             git config --global user.email "bot@n8n.com"
+             git config --global user.name "URL Bot"
+             git pull --rebase --autostash # Pull first to avoid conflicts
+             git add n8n_url.txt
+             git commit -m "Update Active URL"
+             git push
+
+             # 4. Notify Discord
+             # Sends your STABLE Vercel Link to Discord
              curl -H "Content-Type: application/json" \
-                  -d "{\"embeds\": [{\"title\": \"🚀 n8n is Online!\", \"description\": \"**URL:** $TUNNEL_URL\n**Next Reset:** ~5.5 Hours\", \"color\": 5814783}]}" \
+                  -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable URL:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
                   $DISCORD_WEBHOOK
           fi
 
       - name: Run Backup & Restart Loop
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }} # Passes your PAT to the script
+          GH_TOKEN: ${{ secrets.GH_PAT }} # Uses your PAT to trigger the next run
         run: |
           chmod +x backup.sh
           ./backup.sh
