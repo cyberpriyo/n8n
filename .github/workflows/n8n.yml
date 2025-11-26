@@ -23,6 +23,7 @@ jobs:
         run: |
           if [ -f "backups/backup_latest.enc" ]; then
             echo "🔐 Encrypted backup found. Decrypting..."
+            # Uses -iter 10000 to match backup script
             if openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -in "backups/backup_latest.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"; then
                 echo "✅ Decryption successful."
                 if [ -f "restored.tar.gz" ]; then
@@ -48,8 +49,8 @@ jobs:
             -p 5678:5678 \
             -v $(pwd)/n8n-data:/home/node/.n8n \
             -e N8N_SECURE_COOKIE=false \
-            -e WEBHOOK_URL=[https://n8n-priyo.vercel.app/api/proxy](https://n8n-priyo.vercel.app/api/proxy) \
-            -e VUE_APP_URL_BASE_API=[https://n8n-priyo.vercel.app/api/proxy](https://n8n-priyo.vercel.app/api/proxy) \
+            -e WEBHOOK_URL="https://n8n-priyo.vercel.app/api/proxy" \
+            -e VUE_APP_URL_BASE_API="https://n8n-priyo.vercel.app/api/proxy" \
             n8nio/n8n
           
           # Wait for n8n to be ready locally first
@@ -65,15 +66,14 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           # 1. Start Tunnel
-          curl -L --output cloudflared.deb [https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb](https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb)
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           # Start tunnel and log to file
           nohup cloudflared tunnel --url http://localhost:5678 > tunnel.log 2>&1 &
           
-          # 2. Smart Wait for URL
+          # 2. Smart Wait for URL (Up to 60 seconds)
           echo "⏳ Waiting for Tunnel URL..."
           TUNNEL_URL=""
-          # Loop for up to 60 seconds to find the URL
           for i in {1..30}; do
              TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
              if [ ! -z "$TUNNEL_URL" ]; then
@@ -90,9 +90,8 @@ jobs:
           fi
 
           # 3. Health Check the Tunnel
-          # We try to curl the PUBLIC url to make sure it's actually live
           echo "⏳ Verifying Tunnel Stability..."
-          sleep 5 # Give it a moment to propagate
+          sleep 5 
           
           # 4. Update Vercel Pointer
           echo "$TUNNEL_URL" > n8n_url.txt
@@ -106,7 +105,7 @@ jobs:
 
           # 5. Notify Discord
           curl -H "Content-Type: application/json" \
-               -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable URL:** [https://n8n-priyo.vercel.app](https://n8n-priyo.vercel.app)\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
+               -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable URL:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
                $DISCORD_WEBHOOK
 
       - name: Run Backup & Restart Loop
