@@ -23,7 +23,6 @@ jobs:
         run: |
           if [ -f "backups/backup_latest.enc" ]; then
             echo "🔐 Encrypted backup found. Decrypting..."
-            # Uses -iter 10000 to match backup script
             if openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -in "backups/backup_latest.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"; then
                 echo "✅ Decryption successful."
                 if [ -f "restored.tar.gz" ]; then
@@ -44,10 +43,12 @@ jobs:
 
       - name: Start n8n Container
         run: |
+          # Using host networking to fix Cloudflare connection issues
           docker run -d \
             --name n8n \
-            -p 5678:5678 \
+            --network host \
             -v $(pwd)/n8n-data:/home/node/.n8n \
+            -e N8N_PORT=5678 \
             -e N8N_SECURE_COOKIE=false \
             -e WEBHOOK_URL="https://n8n-priyo.vercel.app/api/proxy" \
             -e VUE_APP_URL_BASE_API="https://n8n-priyo.vercel.app/api/proxy" \
