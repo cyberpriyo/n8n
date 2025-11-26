@@ -37,7 +37,7 @@ setup_git_and_push() {
     
     # 5. Force Push (Using the GH_TOKEN for Auth)
     # We add error handling here
-    git remote add origin "https://oauth2:${GH_TOKEN}@[github.com/$](https://github.com/$){GITHUB_REPOSITORY}"
+    git remote add origin "https://oauth2:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
     
     echo "🚀 Pushing to GitHub..."
     if git push -q -f -u origin main; then
