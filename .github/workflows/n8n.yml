@@ -89,9 +89,9 @@ jobs:
              exit 1
           fi
 
-          # 3. Health Check the Tunnel
-          echo "⏳ Verifying Tunnel Stability..."
-          sleep 5 
+          # 3. Health Check the Tunnel (Extended Wait for DNS Propagation)
+          echo "⏳ Stabilizing Tunnel connection (Waiting 30s)..."
+          sleep 30 
           
           # 4. Update Vercel Pointer
           echo "$TUNNEL_URL" > n8n_url.txt
