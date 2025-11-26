@@ -26,7 +26,6 @@ jobs:
             echo "🔐 Encrypted backup found. Decrypting..."
             
             # 1. Decrypt (enc -> tar.gz)
-            # Added -iter 10000 to match the backup script
             if openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -in "backups/backup_latest.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"; then
                 echo "✅ Decryption successful."
                 
@@ -50,15 +49,14 @@ jobs:
           chmod -R 777 n8n-data
 
       - name: Start n8n Container
-        # ⚠️ REPLACE WITH YOUR VERCEL URL
         run: |
           docker run -d \
             --name n8n \
             -p 5678:5678 \
             -v $(pwd)/n8n-data:/home/node/.n8n \
             -e N8N_SECURE_COOKIE=false \
-            -e WEBHOOK_URL=[https://n8n-priyo.vercel.app/api/proxy](https://n8n-priyo.vercel.app/api/proxy) \
-            -e VUE_APP_URL_BASE_API=[https://n8n-priyo.vercel.app/api/proxy](https://n8n-priyo.vercel.app/api/proxy) \
+            -e WEBHOOK_URL=https://n8n-priyo.vercel.app/api/proxy \
+            -e VUE_APP_URL_BASE_API=https://n8n-priyo.vercel.app/api/proxy \
             n8nio/n8n
           
           sleep 15
@@ -68,7 +66,7 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           # 1. Start Tunnel
-          curl -L --output cloudflared.deb [https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb](https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb)
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           nohup cloudflared tunnel --url http://localhost:5678 > tunnel.log 2>&1 &
           sleep 10
@@ -87,15 +85,14 @@ jobs:
              
              git config --global user.email "bot@n8n.com"
              git config --global user.name "URL Bot"
-             git pull --rebase --autostash # Pull first to avoid conflicts
+             git pull --rebase --autostash
              git add n8n_url.txt
              git commit -m "Update Active URL"
              git push
 
              # 4. Notify Discord
-             # Sends your STABLE Vercel Link to Discord
              curl -H "Content-Type: application/json" \
-                  -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable URL:** [https://n8n-priyo.vercel.app](https://n8n-priyo.vercel.app)\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
+                  -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable URL:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
                   $DISCORD_WEBHOOK
           fi
 
