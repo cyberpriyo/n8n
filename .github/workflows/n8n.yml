@@ -17,15 +17,32 @@ jobs:
       - name: Prepare Data Directory
         run: mkdir -p n8n-data
 
-      - name: Restore Latest Backup
+      - name: Restore & Decrypt Backup
+        env:
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
         run: |
-          if [ -d "backups" ] && [ "$(ls -A backups)" ]; then
-            echo "📂 Backups found. Restoring..."
-            LATEST_BACKUP=$(ls -t backups/*.tar.gz | head -n 1)
-            tar -xzf "$LATEST_BACKUP"
+          # Check if the encrypted file exists
+          if [ -f "backups/backup_latest.enc" ]; then
+            echo "🔐 Encrypted backup found. Decrypting..."
+            
+            # 1. Decrypt (enc -> tar.gz)
+            # If password is wrong, this fails safely
+            openssl enc -d -aes-256-cbc -pbkdf2 -in "backups/backup_latest.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"
+            
+            # 2. Unzip (tar.gz -> folder)
+            if [ -f "restored.tar.gz" ]; then
+                echo "📂 Unzipping data..."
+                tar -xzf "restored.tar.gz"
+                rm "restored.tar.gz"
+                echo "✅ Data restored successfully."
+            else
+                echo "❌ Decryption failed. Password might be wrong."
+            fi
           else
-            echo "🆕 Starting fresh instance."
+            echo "🆕 No backup found. Starting fresh."
           fi
+          
+          # Fix permissions for Docker
           chmod -R 777 n8n-data
 
       - name: Start n8n Container
@@ -81,6 +98,7 @@ jobs:
       - name: Run Backup & Restart Loop
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }} # Uses your PAT to trigger the next run
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }} # Needed for encryption
         run: |
           chmod +x backup.sh
           ./backup.sh
