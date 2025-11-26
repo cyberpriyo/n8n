@@ -1,13 +1,12 @@
 name: n8n-hosting
 
 on:
-  workflow_dispatch: # Manual button to start
-  schedule:
-    - cron: '0 */6 * * *' # Restart every 6 hours
+  workflow_dispatch: # Allows manual start and restart via script
 
 jobs:
   run-server:
     runs-on: ubuntu-latest
+    timeout-minutes: 360 # Max allowed by GitHub
     permissions:
       contents: write # Required to push backups
 
@@ -20,33 +19,32 @@ jobs:
 
       - name: Restore Latest Backup
         run: |
-          # Check if backups folder exists and has files
           if [ -d "backups" ] && [ "$(ls -A backups)" ]; then
-            echo "Backups found. Restoring the latest one..."
-            # Get the latest backup file
+            echo "📂 Backups found. Restoring the latest one..."
+            # Get the latest tar.gz file
             LATEST_BACKUP=$(ls -t backups/*.tar.gz | head -n 1)
             echo "Restoring from: $LATEST_BACKUP"
             tar -xzf "$LATEST_BACKUP"
-            echo "Restore complete."
+            echo "✅ Restore complete."
           else
-            echo "No backups found. Starting fresh."
+            echo "🆕 No backups found. Starting fresh instance."
           fi
-          # Fix permissions for Docker
+          # Set permissions so Docker can write to it
           chmod -R 777 n8n-data
 
-      - name: Start n8n container
+      - name: Start n8n Container
         run: |
-          # Run n8n using the local n8n-data folder
           docker run -d \
             --name n8n \
             -p 5678:5678 \
             -v $(pwd)/n8n-data:/home/node/.n8n \
+            -e N8N_SECURE_COOKIE=false \
             n8nio/n8n
           
-          echo "Waiting for n8n to initialize..."
-          sleep 10
+          echo "Waiting for n8n to boot..."
+          sleep 15
 
-      - name: Start Cloudflared Tunnel & Notify Discord
+      - name: Start Tunnel & Notify Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
@@ -54,29 +52,32 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-          # 2. Start Tunnel in background and log to file
+          # 2. Run Tunnel
+          # We output to a log file so we can scrape the URL
           nohup cloudflared tunnel --url http://localhost:5678 > tunnel.log 2>&1 &
           
-          # 3. Wait for URL to be generated
-          echo "Waiting for Tunnel URL..."
+          echo "Waiting for Tunnel URL to generate..."
           sleep 10
           
-          # 4. Extract URL from logs
+          # 3. Extract URL
           TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
           
           if [ -z "$TUNNEL_URL" ]; then
-             echo "Failed to get URL. Printing logs:"
+             echo "❌ Failed to get URL. Logs:"
              cat tunnel.log
           else
-             echo "Generated URL: $TUNNEL_URL"
+             echo "🔗 Generated URL: $TUNNEL_URL"
              
-             # 5. Send to Discord
+             # 4. Send to Discord
+             # Uses a nice embed format
              curl -H "Content-Type: application/json" \
-                  -d "{\"content\": \"🚀 **n8n is Online!**\n🔗 URL: $TUNNEL_URL\n⏰ Next reset in ~6 hours.\"}" \
+                  -d "{\"embeds\": [{\"title\": \"🚀 n8n is Online!\", \"description\": \"**URL:** $TUNNEL_URL\n**Next Reset:** ~5.5 Hours\", \"color\": 5814783}]}" \
                   $DISCORD_WEBHOOK
           fi
 
-      - name: Run Backup Loop
+      - name: Run Backup & Restart Loop
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }} # Passes your PAT to the script
         run: |
           chmod +x backup.sh
           ./backup.sh
