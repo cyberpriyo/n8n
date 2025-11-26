@@ -3,58 +3,76 @@
 # --- CONFIGURATION ---
 BACKUP_DIR="backups"
 DATA_DIR="n8n-data"
-MAX_BACKUPS=5
-SLEEP_SECONDS=1800  # 30 Minutes
-# 5.5 Hours = 330 Minutes. 330 / 30 = 11 Loops.
-MAX_LOOPS=11 
+SLEEP_SECONDS=1800 # 30 Minutes
+MAX_LOOPS=11       # 5.5 Hours
 CURRENT_LOOP=0
-WORKFLOW_FILE="n8n.yml" 
+WORKFLOW_FILE="n8n.yml"
 
 mkdir -p $BACKUP_DIR
 
-# --- GIT SETUP ---
-git config --global user.email "bot@n8n.com"
-git config --global user.name "n8n Bot"
+# --- GIT RELOAD FUNCTION ---
+# This wipes the history to keep the repo size tiny (prevents bloating)
+setup_git_and_push() {
+    MESSAGE=$1
+    
+    # 1. Delete history
+    rm -rf .git
+    
+    # 2. Re-initialize
+    git init
+    git config --global user.email "bot@n8n.com"
+    git config --global user.name "n8n Bot"
+    
+    # 3. Add files
+    git add .
+    
+    # 4. Commit
+    git commit -m "$MESSAGE"
+    
+    # 5. Force Push (Using the GH_TOKEN for Auth)
+    # We use quiet (-q) to prevent the token from leaking in logs
+    git remote add origin "https://oauth2:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
+    git push -q -f -u origin main
+}
 
-# --- THE BACKUP LOOP ---
+# --- THE LOOP ---
 while [ $CURRENT_LOOP -lt $MAX_LOOPS ]; do
     echo "--- Loop $((CURRENT_LOOP+1)) of $MAX_LOOPS ---"
     echo "Waiting $SLEEP_SECONDS seconds..."
     sleep $SLEEP_SECONDS
 
-    # 1. Create Backup
-    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    BACKUP_FILE="$BACKUP_DIR/backup_$TIMESTAMP.tar.gz"
-    echo "Creating backup: $BACKUP_FILE"
+    # 1. Zip the data
+    echo "🗜️ Zipping data..."
+    tar -czf temp_backup.tar.gz "$DATA_DIR" 2>/dev/null
+
+    # 2. Encrypt the zip
+    # We overwrite the SAME file to save space.
+    echo "🔒 Encrypting data..."
+    openssl enc -aes-256-cbc -salt -pbkdf2 -in temp_backup.tar.gz -out "$BACKUP_DIR/backup_latest.enc" -k "$BACKUP_PASSWORD"
     
-    tar -czf "$BACKUP_FILE" "$DATA_DIR" 2>/dev/null
+    # 3. Cleanup raw file
+    rm temp_backup.tar.gz
 
-    # 2. Rotate (Keep Max 5)
-    ls -tp "$BACKUP_DIR" | grep -v '/$' | tail -n +$((MAX_BACKUPS + 1)) | xargs -I {} rm -- "$BACKUP_DIR/{}"
-
-    # 3. Commit & Push
-    git pull --rebase --autostash || echo "Git pull failed, continuing..."
-    git add "$BACKUP_DIR"
-    git commit -m "Auto-backup: $TIMESTAMP"
-    git push || echo "Git push failed, will try next time"
+    # 4. Wipe History & Force Push
+    echo "🚀 Pushing to GitHub (History Wiped)..."
+    setup_git_and_push "Auto-save: Loop $((CURRENT_LOOP+1))"
 
     ((CURRENT_LOOP++))
 done
 
-# --- THE RESTART SEQUENCE (At 5.5 Hours) ---
-echo "⏳ 5.5 Hours reached. Initiating restart sequence..."
+# --- RESTART SEQUENCE (5.5 Hours) ---
+echo "⏳ 5.5 Hours reached. Performing final save..."
 
-# Final Safety Backup
-TIMESTAMP=$(date +%Y%m%d_%H%M%S_FINAL)
-BACKUP_FILE="$BACKUP_DIR/backup_$TIMESTAMP.tar.gz"
-tar -czf "$BACKUP_FILE" "$DATA_DIR" 2>/dev/null
-git add "$BACKUP_DIR"
-git commit -m "Final Backup before Restart: $TIMESTAMP"
-git push
+# Final Backup
+tar -czf temp_backup.tar.gz "$DATA_DIR" 2>/dev/null
+openssl enc -aes-256-cbc -salt -pbkdf2 -in temp_backup.tar.gz -out "$BACKUP_DIR/backup_latest.enc" -k "$BACKUP_PASSWORD"
+rm temp_backup.tar.gz
 
-echo "🚀 Triggering next workflow run..."
-# Triggers the workflow to start FRESH immediately
+# Final Push
+setup_git_and_push "Final Save before Restart"
+
+echo "🔄 Triggering new runner..."
 gh workflow run "$WORKFLOW_FILE" --ref main
 
-echo "✅ Restart signal sent."
+echo "✅ Done. Shutting down."
 exit 0
