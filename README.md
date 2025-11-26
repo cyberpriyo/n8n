@@ -149,5 +149,3 @@ The Docker container is launched with these variables to ensure n8n generates th
   * **n8n:** Fair-code licensed (Sustainable Use License).
   * **Cloudflared:** MIT License.
   * **Concept:** "The Phoenix Server" methodology.
-
-```
