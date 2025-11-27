@@ -10,35 +10,52 @@ permissions:
 jobs:
   run-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6 Hours max
+    timeout-minutes: 360
     
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Prepare Data Directory
-        run: mkdir -p n8n-data
-
-      - name: Restore & Decrypt Backup
+      - name: Setup Rclone
         env:
-          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
         run: |
-          # We always look for backup_1.enc (The latest one)
-          if [ -f "backups/backup_1.enc" ]; then
-            echo "🔐 Found latest backup (backup_1.enc). Decrypting..."
-            if openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -in "backups/backup_1.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"; then
-                echo "✅ Decryption successful."
-                tar -xzf "restored.tar.gz"
-                rm "restored.tar.gz"
-            else
-                echo "❌ Decryption failed. Check Password."
-            fi
+          # Install Rclone
+          sudo -v ; curl https://rclone.org/install.sh | sudo bash
+          
+          # Create Config Directory
+          mkdir -p ~/.config/rclone
+          
+          # Write the config from the secret to the file
+          echo "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          
+          echo "✅ Rclone installed and configured."
+
+      - name: Restore from Google Drive
+        run: |
+          mkdir -p n8n-data
+          REMOTE="gdrive:"
+          BACKUP_FOLDER="n8n_backups"
+          
+          echo "🔍 Checking for backups on Google Drive..."
+          
+          # Try to copy backup_1 (the latest)
+          if rclone copy "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz" . 2>/dev/null; then
+             echo "✅ Found backup_1.tar.gz. Extracting..."
+             tar -xzf backup_1.tar.gz
+             rm backup_1.tar.gz
           else
-            echo "🆕 No backup found. Starting fresh instance."
+             echo "🆕 No backup found on Drive. Starting fresh."
           fi
+          
           chmod -R 777 n8n-data
 
       - name: Start n8n Container
+        env:
+          # SECURITY: Basic Auth is mandatory for public repos
+          N8N_BASIC_AUTH_ACTIVE: "true"
+          N8N_BASIC_AUTH_USER: ${{ secrets.N8N_BASIC_AUTH_USER }}
+          N8N_BASIC_AUTH_PASSWORD: ${{ secrets.N8N_BASIC_AUTH_PASSWORD }}
         run: |
           docker run -d \
             --name n8n \
@@ -46,12 +63,14 @@ jobs:
             -v $(pwd)/n8n-data:/home/node/.n8n \
             -e N8N_PORT=5678 \
             -e N8N_SECURE_COOKIE=false \
+            -e N8N_BASIC_AUTH_ACTIVE=$N8N_BASIC_AUTH_ACTIVE \
+            -e N8N_BASIC_AUTH_USER=$N8N_BASIC_AUTH_USER \
+            -e N8N_BASIC_AUTH_PASSWORD=$N8N_BASIC_AUTH_PASSWORD \
             -e WEBHOOK_URL="https://n8n-priyo.vercel.app/api/proxy" \
             -e VUE_APP_URL_BASE_API="https://n8n-priyo.vercel.app/api/proxy" \
             n8nio/n8n
           
           echo "⏳ Waiting for n8n to boot..."
-          # Wait up to 60 seconds for n8n
           for i in {1..12}; do
             if curl -s -f "http://localhost:5678/healthz"; then
               echo "✅ n8n is UP!"
@@ -68,10 +87,9 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           
-          # Start Tunnel
           nohup cloudflared tunnel --url http://localhost:5678 > tunnel.log 2>&1 &
           
-          echo "⏳ extracting Tunnel URL..."
+          echo "⏳ Waiting for Tunnel URL..."
           TUNNEL_URL=""
           for i in {1..30}; do
              TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
@@ -82,34 +100,27 @@ jobs:
           done
 
           if [ -z "$TUNNEL_URL" ]; then
-             echo "❌ Tunnel failed to start."
+             echo "❌ Tunnel failed."
              exit 1
           fi
 
           echo "✅ URL: $TUNNEL_URL"
-          
-          # 1. Update GitHub file for Vercel Proxy
           echo "$TUNNEL_URL" > n8n_url.txt
           
-          # Git config for the URL update
           git config --global user.email "bot@n8n.com"
           git config --global user.name "URL Bot"
-          
-          # We need to pull first because the repo might have changed
-          git pull origin main --rebase || echo "No changes to pull"
+          git pull origin main --rebase || echo "No changes"
           git add n8n_url.txt
           git commit -m "Update Active URL"
           git push
 
-          # 2. Send Discord Notification
           curl -H "Content-Type: application/json" \
-               -d "{\"embeds\": [{\"title\": \"🚀 n8n Started (Loop)\", \"description\": \"**Proxy:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\n\n*Recovered latest backup automatically.*\", \"color\": 3066993}]}" \
+               -d "{\"embeds\": [{\"title\": \"🚀 n8n Online (GDrive)\", \"description\": \"**Proxy:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 3066993}]}" \
                $DISCORD_WEBHOOK
 
       - name: Run Backup Loop
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }} 
-          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }} 
         run: |
           chmod +x backup.sh
           ./backup.sh
