@@ -1,77 +1,67 @@
 #!/bin/bash
 
 # --- CONFIGURATION ---
-BACKUP_DIR="backups"
 DATA_DIR="n8n-data"
-SLEEP_SECONDS=1800  # 30 Minutes
-MAX_LOOPS=11        # Runs for ~5.5 hours (GitHub limit is 6h)
-WORKFLOW_FILE="n8n.yml"
+SLEEP_SECONDS=600   # 10 Minutes
+MAX_LOOPS=34        # ~5.6 hours
+REMOTE="gdrive:"    # Matches your config [gdrive]
+BACKUP_FOLDER="n8n_backups"
 
-mkdir -p $BACKUP_DIR
-
-# Function to rotate backups (1->2, 2->3, ... 4->5)
+# Function to rotate backups (1->2 ... 19->20)
 rotate_backups() {
-    echo "🔄 Rotating backups..."
-    # Remove the oldest (5)
-    rm -f "$BACKUP_DIR/backup_5.enc"
+    echo "🔄 Rotating backups on Google Drive (Keeping last 20)..."
     
-    # Shift others up
-    for i in {4..1}; do
-        if [ -f "$BACKUP_DIR/backup_${i}.enc" ]; then
-            mv "$BACKUP_DIR/backup_${i}.enc" "$BACKUP_DIR/backup_$((i+1)).enc"
+    # 1. Delete the oldest (backup_20)
+    rclone delete "$REMOTE$BACKUP_FOLDER/backup_20.tar.gz" 2>/dev/null
+    
+    # 2. Shift everything up (19->20, 18->19, ... 1->2)
+    for i in {19..1}; do
+        NEXT=$((i+1))
+        # Only move if the file exists
+        if rclone lsf "$REMOTE$BACKUP_FOLDER/backup_${i}.tar.gz" >/dev/null 2>&1; then
+            rclone moveto "$REMOTE$BACKUP_FOLDER/backup_${i}.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_${NEXT}.tar.gz"
         fi
     done
 }
 
 setup_git_and_push() {
-    MESSAGE=$1
-    
-    # We NUKE the git history every time to keep the repo tiny.
-    # We only care about the current files, not history.
-    rm -rf .git
-    git init
-    git branch -M main
+    # We only update the URL text file in GitHub
     git config --global user.email "bot@n8n.com"
-    git config --global user.name "n8n Bot"
-    
-    git add .
-    git commit -m "$MESSAGE"
-    
-    # Force push to overwrite the repository state
-    git remote add origin "https://oauth2:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
-    git push -q -f -u origin main
+    git config --global user.name "URL Bot"
+    git add n8n_url.txt
+    git commit -m "Update Active URL" || echo "No changes"
+    git push -q origin main
 }
 
 while [ $CURRENT_LOOP -lt $MAX_LOOPS ]; do
     echo "--- Loop $((CURRENT_LOOP+1)) of $MAX_LOOPS ---"
     
-    # Wait for the next save cycle
+    # Wait 10 minutes
     sleep $SLEEP_SECONDS
 
-    # Rotate existing backups before creating a new one
+    # 1. Rotate
     rotate_backups
 
-    # Create new backup as backup_1.enc (The Latest)
-    echo "💾 Creating new backup..."
-    tar -czf temp.tar.gz "$DATA_DIR" 2>/dev/null
-    openssl enc -aes-256-cbc -salt -pbkdf2 -iter 10000 -in temp.tar.gz -out "$BACKUP_DIR/backup_1.enc" -k "$BACKUP_PASSWORD"
+    # 2. Upload New (as backup_1)
+    echo "☁️ Uploading backup_1..."
+    tar -czf temp.tar.gz "$DATA_DIR"
+    rclone copy temp.tar.gz "$REMOTE$BACKUP_FOLDER"
+    rclone moveto "$REMOTE$BACKUP_FOLDER/temp.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz"
     rm temp.tar.gz
 
-    setup_git_and_push "Auto-save (Loop $((CURRENT_LOOP+1)))"
+    # 3. Keep GitHub Alive
+    setup_git_and_push
     ((CURRENT_LOOP++))
 done
 
 # --- FINAL SAVE & RESTART ---
-echo "⏳ Time limit reached. Performing final save and restarting..."
-
+echo "⏳ Time limit reached. Restarting..."
 rotate_backups
-
-tar -czf temp.tar.gz "$DATA_DIR" 2>/dev/null
-openssl enc -aes-256-cbc -salt -pbkdf2 -iter 10000 -in temp.tar.gz -out "$BACKUP_DIR/backup_1.enc" -k "$BACKUP_PASSWORD"
+tar -czf temp.tar.gz "$DATA_DIR"
+rclone copy temp.tar.gz "$REMOTE$BACKUP_FOLDER"
+rclone moveto "$REMOTE$BACKUP_FOLDER/temp.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz"
 rm temp.tar.gz
 
-setup_git_and_push "Final Save & Restart"
-
-# Trigger the workflow again
-gh workflow run "$WORKFLOW_FILE" --ref main
+# Trigger next workflow
+gh workflow run n8n.yml --ref main
 exit 0
