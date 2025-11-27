@@ -3,10 +3,10 @@
 # --- CONFIGURATION ---
 DATA_DIR="n8n-data"
 SLEEP_SECONDS=600   # 10 Minutes
-MAX_LOOPS=34        # ~5.6 hours
+MAX_LOOPS=30        # <--- FIXED: 5 Hours total (Leaves 1h safety buffer)
 REMOTE="gdrive:"    
 BACKUP_FOLDER="n8n_backups"
-CURRENT_LOOP=0      # <--- Loop Start Fix
+CURRENT_LOOP=0      
 
 # Function to rotate backups
 rotate_backups() {
@@ -32,7 +32,7 @@ rotate_backups() {
 
 setup_git_and_push() {
     git config --global user.email "bot@n8n.com"
-    # --- CHANGED NAME HERE ---
+    # Keeping your Vercel optimization
     git config --global user.name "n8n-hosting-bot"
     
     git add n8n_url.txt
@@ -55,18 +55,19 @@ while [ "$CURRENT_LOOP" -lt "$MAX_LOOPS" ]; do
     rclone moveto "$REMOTE$BACKUP_FOLDER/temp.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz"
     rm temp.tar.gz
 
-    # 3. Update GitHub (Vercel will ignore this commit now)
+    # 3. Update GitHub
     setup_git_and_push
     ((CURRENT_LOOP++))
 done
 
 # --- FINAL SAVE & RESTART ---
-echo "⏳ Time limit reached. Restarting..."
+echo "⏳ Time limit reached (5 Hours). Restarting..."
 rotate_backups
 tar -czf temp.tar.gz "$DATA_DIR"
 rclone copy temp.tar.gz "$REMOTE$BACKUP_FOLDER"
 rclone moveto "$REMOTE$BACKUP_FOLDER/temp.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz"
 rm temp.tar.gz
 
+# Trigger next workflow
 gh workflow run n8n.yml --ref main
 exit 0
