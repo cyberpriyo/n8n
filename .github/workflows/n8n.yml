@@ -3,13 +3,15 @@ name: n8n-hosting
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   run-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    permissions:
-      contents: write
-
+    timeout-minutes: 360 # 6 Hours max
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -21,18 +23,18 @@ jobs:
         env:
           BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
         run: |
-          if [ -f "backups/backup_latest.enc" ]; then
-            echo "🔐 Encrypted backup found. Decrypting..."
-            # Using -iter 10000 to match backup script
-            if openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -in "backups/backup_latest.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"; then
+          # We always look for backup_1.enc (The latest one)
+          if [ -f "backups/backup_1.enc" ]; then
+            echo "🔐 Found latest backup (backup_1.enc). Decrypting..."
+            if openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -in "backups/backup_1.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"; then
                 echo "✅ Decryption successful."
                 tar -xzf "restored.tar.gz"
                 rm "restored.tar.gz"
             else
-                echo "❌ Decryption failed. Password might be wrong."
+                echo "❌ Decryption failed. Check Password."
             fi
           else
-            echo "🆕 No backup found. Starting fresh."
+            echo "🆕 No backup found. Starting fresh instance."
           fi
           chmod -R 777 n8n-data
 
@@ -49,22 +51,27 @@ jobs:
             n8nio/n8n
           
           echo "⏳ Waiting for n8n to boot..."
-          until curl -s -f -o /dev/null "http://localhost:5678/healthz"; do
+          # Wait up to 60 seconds for n8n
+          for i in {1..12}; do
+            if curl -s -f "http://localhost:5678/healthz"; then
+              echo "✅ n8n is UP!"
+              break
+            fi
             sleep 5
-            echo "Still waiting..."
           done
-          echo "✅ n8n is UP!"
 
-      - name: Start Tunnel & Update Vercel
+      - name: Start Tunnel & Notify
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           
+          # Start Tunnel
           nohup cloudflared tunnel --url http://localhost:5678 > tunnel.log 2>&1 &
           
-          echo "⏳ Waiting for Tunnel URL..."
+          echo "⏳ extracting Tunnel URL..."
           TUNNEL_URL=""
           for i in {1..30}; do
              TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
@@ -75,30 +82,31 @@ jobs:
           done
 
           if [ -z "$TUNNEL_URL" ]; then
-             echo "❌ Tunnel failed."
-             cat tunnel.log
+             echo "❌ Tunnel failed to start."
              exit 1
           fi
 
-          echo "✅ Tunnel Online: $TUNNEL_URL"
+          echo "✅ URL: $TUNNEL_URL"
           
-          # Stabilize
-          sleep 30
-          
+          # 1. Update GitHub file for Vercel Proxy
           echo "$TUNNEL_URL" > n8n_url.txt
           
+          # Git config for the URL update
           git config --global user.email "bot@n8n.com"
           git config --global user.name "URL Bot"
-          git pull --rebase --autostash
+          
+          # We need to pull first because the repo might have changed
+          git pull origin main --rebase || echo "No changes to pull"
           git add n8n_url.txt
           git commit -m "Update Active URL"
           git push
 
+          # 2. Send Discord Notification
           curl -H "Content-Type: application/json" \
-               -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
+               -d "{\"embeds\": [{\"title\": \"🚀 n8n Started (Loop)\", \"description\": \"**Proxy:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\n\n*Recovered latest backup automatically.*\", \"color\": 3066993}]}" \
                $DISCORD_WEBHOOK
 
-      - name: Run Backup & Restart Loop
+      - name: Run Backup Loop
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }} 
           BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }} 
