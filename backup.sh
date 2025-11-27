@@ -6,7 +6,7 @@ SLEEP_SECONDS=600   # 10 Minutes
 MAX_LOOPS=34        # ~5.6 hours
 REMOTE="gdrive:"    
 BACKUP_FOLDER="n8n_backups"
-CURRENT_LOOP=0      # <--- THIS WAS MISSING!
+CURRENT_LOOP=0      # <--- Loop Start Fix
 
 # Function to rotate backups
 rotate_backups() {
@@ -32,30 +32,30 @@ rotate_backups() {
 
 setup_git_and_push() {
     git config --global user.email "bot@n8n.com"
-    git config --global user.name "URL Bot"
+    # --- CHANGED NAME HERE ---
+    git config --global user.name "n8n-hosting-bot"
+    
     git add n8n_url.txt
     git commit -m "Update Active URL" || echo "No changes"
     git push -q origin main
 }
 
-# The Loop
 while [ "$CURRENT_LOOP" -lt "$MAX_LOOPS" ]; do
     echo "--- Loop $((CURRENT_LOOP+1)) of $MAX_LOOPS ---"
     
-    # Wait 10 minutes
     sleep $SLEEP_SECONDS
 
     # 1. Rotate
     rotate_backups
 
-    # 2. Upload New (as backup_1)
+    # 2. Upload New
     echo "☁️ Uploading backup_1..."
     tar -czf temp.tar.gz "$DATA_DIR"
     rclone copy temp.tar.gz "$REMOTE$BACKUP_FOLDER"
     rclone moveto "$REMOTE$BACKUP_FOLDER/temp.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz"
     rm temp.tar.gz
 
-    # 3. Keep GitHub Alive
+    # 3. Update GitHub (Vercel will ignore this commit now)
     setup_git_and_push
     ((CURRENT_LOOP++))
 done
@@ -68,6 +68,5 @@ rclone copy temp.tar.gz "$REMOTE$BACKUP_FOLDER"
 rclone moveto "$REMOTE$BACKUP_FOLDER/temp.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz"
 rm temp.tar.gz
 
-# Trigger next workflow
 gh workflow run n8n.yml --ref main
 exit 0
