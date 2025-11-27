@@ -20,15 +20,9 @@ jobs:
         env:
           RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
         run: |
-          # Install Rclone
           sudo -v ; curl https://rclone.org/install.sh | sudo bash
-          
-          # Create Config Directory
           mkdir -p ~/.config/rclone
-          
-          # Write the config from the secret to the file
           echo "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
-          
           echo "✅ Rclone installed and configured."
 
       - name: Restore from Google Drive
@@ -38,8 +32,6 @@ jobs:
           BACKUP_FOLDER="n8n_backups"
           
           echo "🔍 Checking for backups on Google Drive..."
-          
-          # Try to copy backup_1 (the latest)
           if rclone copy "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz" . 2>/dev/null; then
              echo "✅ Found backup_1.tar.gz. Extracting..."
              tar -xzf backup_1.tar.gz
@@ -47,12 +39,10 @@ jobs:
           else
              echo "🆕 No backup found on Drive. Starting fresh."
           fi
-          
           chmod -R 777 n8n-data
 
       - name: Start n8n Container
         env:
-          # SECURITY: Basic Auth is mandatory for public repos
           N8N_BASIC_AUTH_ACTIVE: "true"
           N8N_BASIC_AUTH_USER: ${{ secrets.N8N_BASIC_AUTH_USER }}
           N8N_BASIC_AUTH_PASSWORD: ${{ secrets.N8N_BASIC_AUTH_PASSWORD }}
@@ -108,7 +98,9 @@ jobs:
           echo "$TUNNEL_URL" > n8n_url.txt
           
           git config --global user.email "bot@n8n.com"
-          git config --global user.name "URL Bot"
+          # --- CHANGED NAME HERE ---
+          git config --global user.name "n8n-hosting-bot"
+          
           git pull origin main --rebase || echo "No changes"
           git add n8n_url.txt
           git commit -m "Update Active URL"
