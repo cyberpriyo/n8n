@@ -1,12 +1,12 @@
 name: n8n-hosting
 
 on:
-  workflow_dispatch: # Allows manual start
+  workflow_dispatch:
 
 jobs:
   run-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6 Hours Max
+    timeout-minutes: 360
     permissions:
       contents: write
 
@@ -23,18 +23,13 @@ jobs:
         run: |
           if [ -f "backups/backup_latest.enc" ]; then
             echo "🔐 Encrypted backup found. Decrypting..."
+            # Using -iter 10000 to match backup script
             if openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -in "backups/backup_latest.enc" -out "restored.tar.gz" -k "$BACKUP_PASSWORD"; then
                 echo "✅ Decryption successful."
-                if [ -f "restored.tar.gz" ]; then
-                    echo "📂 Unzipping data..."
-                    tar -xzf "restored.tar.gz"
-                    rm "restored.tar.gz"
-                    echo "✅ Data restored."
-                else
-                    echo "❌ Error: Decrypted file is missing."
-                fi
+                tar -xzf "restored.tar.gz"
+                rm "restored.tar.gz"
             else
-                echo "❌ Decryption failed. Password might be incorrect or file corrupted."
+                echo "❌ Decryption failed. Password might be wrong."
             fi
           else
             echo "🆕 No backup found. Starting fresh."
@@ -43,7 +38,6 @@ jobs:
 
       - name: Start n8n Container
         run: |
-          # Using host networking to fix Cloudflare connection issues
           docker run -d \
             --name n8n \
             --network host \
@@ -54,47 +48,43 @@ jobs:
             -e VUE_APP_URL_BASE_API="https://n8n-priyo.vercel.app/api/proxy" \
             n8nio/n8n
           
-          # Wait for n8n to be ready locally first
           echo "⏳ Waiting for n8n to boot..."
           until curl -s -f -o /dev/null "http://localhost:5678/healthz"; do
             sleep 5
-            echo "Still waiting for n8n..."
+            echo "Still waiting..."
           done
-          echo "✅ n8n is running locally!"
+          echo "✅ n8n is UP!"
 
       - name: Start Tunnel & Update Vercel
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          # 1. Start Tunnel
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
-          # Start tunnel and log to file
+          
           nohup cloudflared tunnel --url http://localhost:5678 > tunnel.log 2>&1 &
           
-          # 2. Smart Wait for URL (Up to 60 seconds)
           echo "⏳ Waiting for Tunnel URL..."
           TUNNEL_URL=""
           for i in {1..30}; do
              TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
              if [ ! -z "$TUNNEL_URL" ]; then
-                echo "✅ Found URL: $TUNNEL_URL"
                 break
              fi
              sleep 2
           done
 
           if [ -z "$TUNNEL_URL" ]; then
-             echo "❌ Tunnel failed to generate URL."
+             echo "❌ Tunnel failed."
              cat tunnel.log
              exit 1
           fi
 
-          # 3. Health Check the Tunnel (Extended Wait for DNS Propagation)
-          echo "⏳ Stabilizing Tunnel connection (Waiting 30s)..."
-          sleep 30 
+          echo "✅ Tunnel Online: $TUNNEL_URL"
           
-          # 4. Update Vercel Pointer
+          # Stabilize
+          sleep 30
+          
           echo "$TUNNEL_URL" > n8n_url.txt
           
           git config --global user.email "bot@n8n.com"
@@ -104,9 +94,8 @@ jobs:
           git commit -m "Update Active URL"
           git push
 
-          # 5. Notify Discord
           curl -H "Content-Type: application/json" \
-               -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable URL:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
+               -d "{\"embeds\": [{\"title\": \"🚀 n8n Online\", \"description\": \"**Stable:** https://n8n-priyo.vercel.app\n**Direct:** $TUNNEL_URL\", \"color\": 5814783}]}" \
                $DISCORD_WEBHOOK
 
       - name: Run Backup & Restart Loop
