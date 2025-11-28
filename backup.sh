@@ -3,7 +3,7 @@
 # --- CONFIGURATION ---
 DATA_DIR="n8n-data"
 SLEEP_SECONDS=600   # 10 Minutes
-MAX_LOOPS=30        # <--- FIXED: 5 Hours total (Leaves 1h safety buffer)
+MAX_LOOPS=31        # <--- FIXED: 5.10 Hours total
 REMOTE="gdrive:"    
 BACKUP_FOLDER="n8n_backups"
 CURRENT_LOOP=0      
@@ -24,6 +24,7 @@ rotate_backups() {
     # 2. Shift everything up (19->20 ... 1->2)
     for i in {19..1}; do
         NEXT=$((i+1))
+        # Only move if the file exists
         if rclone lsf "$REMOTE$BACKUP_FOLDER/backup_${i}.tar.gz" >/dev/null 2>&1; then
             rclone moveto "$REMOTE$BACKUP_FOLDER/backup_${i}.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_${NEXT}.tar.gz"
         fi
@@ -67,6 +68,11 @@ tar -czf temp.tar.gz "$DATA_DIR"
 rclone copy temp.tar.gz "$REMOTE$BACKUP_FOLDER"
 rclone moveto "$REMOTE$BACKUP_FOLDER/temp.tar.gz" "$REMOTE$BACKUP_FOLDER/backup_1.tar.gz"
 rm temp.tar.gz
+
+# 🔔 Send Goodbye Notification
+curl -H "Content-Type: application/json" \
+     -d "{\"embeds\": [{\"title\": \"⚠️ n8n Restarting...\", \"description\": \"Server is resetting now. Estimated downtime: 5-8 mins.\", \"color\": 16711680}]}" \
+     $DISCORD_WEBHOOK
 
 # Trigger next workflow
 gh workflow run n8n.yml --ref main
