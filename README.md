@@ -40,8 +40,6 @@ Go to `Settings` > `Secrets and variables` > `Actions`:
 | `GH_PAT` | **Personal Access Token.** Needs `repo` and `workflow` scopes. Used to bypass the GitHub bot restriction to trigger self-restarts. |
 | `DISCORD_WEBHOOK` | URL of the Discord channel where the bot posts status updates (Start/Stop/New URLs). |
 | `RCLONE_CONFIG` | The content of your `rclone.conf` file containing the Google Drive token. |
-| `N8N_BASIC_AUTH_USER` | **Required.** Username for Basic Auth (Blocks unauthorized bots from accessing your public URL). |
-| `N8N_BASIC_AUTH_PASSWORD` | **Required.** Password for Basic Auth. |
 
 ### 2. Vercel Environment Variables
 Go to Vercel Project > `Settings` > `Environment Variables`:
