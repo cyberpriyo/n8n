@@ -8,13 +8,12 @@
 
 ## 🏗️ Architecture
 
-This system uses three components to create a "fake" VPS experience:
+This system uses four components to create a robust, "fake" VPS experience:
 
-1.  **The Host (GitHub Actions):** Runs the n8n Docker container. It resets every ~6 hours (GitHub hard limit).
+1.  **The Host (GitHub Actions):** Runs the n8n Docker container. It resets every ~5.5 hours to avoid timeouts.
 2.  **The Storage (Google Drive):** Uses **Rclone** to sync your n8n data to a private folder in Google Drive every **10 minutes**.
-3.  **The Proxy (Vercel):** A Serverless Function that acts as a "Traffic Director."
-    * **Humans:** Redirects browser visits to the *current* Cloudflare URL.
-    * **Robots (Webhooks):** Proxies API requests silently to the n8n server.
+3.  **The Proxy (Vercel):** A Serverless Function that acts as a "Traffic Director" and handles browser redirection.
+4.  **The Buffer (Hookdeck):** *Optional but Recommended.* Queues incoming webhooks during server restarts to ensure **Zero Data Loss**.
 
 **Data Persistence:**
 * **Frequency:** Backups run every **10 minutes**.
@@ -25,7 +24,7 @@ This system uses three components to create a "fake" VPS experience:
 
 ## ⚡ Quick Links
 
-* **Stable Access URL:** `https://n8n-priyo.vercel.app`
+* **Stable Editor URL:** `https://n8n-priyo.vercel.app` (Use this to access the UI)
 * **Health Check:** `https://n8n-priyo.vercel.app/healthz`
 * **Webhook Base URL:** `https://n8n-priyo.vercel.app/api/proxy`
 
@@ -39,10 +38,10 @@ Go to `Settings` > `Secrets and variables` > `Actions`:
 | Secret Name | Description |
 | :--- | :--- |
 | `GH_PAT` | **Personal Access Token.** Needs `repo` and `workflow` scopes. Used to bypass the GitHub bot restriction to trigger self-restarts. |
-| `DISCORD_WEBHOOK` | URL of the Discord channel where the bot posts the new server link and status updates. |
+| `DISCORD_WEBHOOK` | URL of the Discord channel where the bot posts status updates (Start/Stop/New URLs). |
 | `RCLONE_CONFIG` | The content of your `rclone.conf` file containing the Google Drive token. |
-| `N8N_BASIC_AUTH_USER` | Username for Basic Auth (Required for security since the repo/URL is public). |
-| `N8N_BASIC_AUTH_PASSWORD` | Password for Basic Auth. |
+| `N8N_BASIC_AUTH_USER` | **Required.** Username for Basic Auth (Blocks unauthorized bots from accessing your public URL). |
+| `N8N_BASIC_AUTH_PASSWORD` | **Required.** Password for Basic Auth. |
 
 ### 2. Vercel Environment Variables
 Go to Vercel Project > `Settings` > `Environment Variables`:
@@ -66,48 +65,55 @@ To prevent Vercel from burning build minutes every time the bot updates the URL:
     * Installs Rclone and injects the config.
     * Restores the latest backup from Google Drive.
     * Runs n8n in Docker with Basic Auth enabled.
-    * Starts Cloudflare Tunnel.
-    * Updates `n8n_url.txt` with the new tunnel URL.
+    * **Configures n8n to generate Hookdeck URLs automatically.**
+    * Starts Cloudflare Tunnel & updates `n8n_url.txt`.
 * **`backup.sh`**: The heartbeat.
-    * Runs in the background.
     * Uploads a backup to Google Drive every **10 mins**.
     * Rotates files (keeps `backup_1` through `backup_20`).
-    * **At 5.5 Hours:** Forces a final save, triggers a new workflow run, and shuts down.
+    * **At 5 Hours:** Sends a "Goodbye" Discord alert, forces a final save, triggers a new workflow run, and shuts down.
 * **`api/proxy.js`**: The Vercel Middleware.
     * Reads `n8n_url.txt` from GitHub.
     * Handles the logic: If Browser -> Redirect; If Webhook -> Proxy.
-* **`n8n_url.txt`**: A dynamic file containing the currently active Cloudflare URL.
 
 ---
 
 ## 🔄 The Lifecycle (The "Reset" Loop)
 
 1.  **Start (0h:00m):** Server boots. Latest backup pulled from GDrive. New Cloudflare URL generated.
-2.  **Notification:** Discord receives "🚀 n8n is Online" with the new URL.
-3.  **Operation (0h - 5h:30m):**
+2.  **Notification:** Discord receives "🚀 n8n is Online".
+3.  **Operation (0h - 5h:00m):**
     * Server runs normally.
     * `backup.sh` uploads encrypted data to Google Drive every 10 mins.
-4.  **Handover (5h:30m):**
-    * `backup.sh` initiates "Restart Sequence".
+4.  **Handover (5h:00m):**
+    * `backup.sh` sends **"⚠️ n8n Restarting..."** to Discord.
     * Final "Safety Backup" is uploaded.
     * New Workflow is triggered via `gh` CLI.
     * Current runner shuts down.
 5.  **Downtime (~5-10 mins):**
     * *The "Gap of Death."* The old server is dead. The new one is booting.
-    * Vercel will return `503: n8n is restarting`.
+    * **Hookdeck** catches all incoming webhooks and holds them.
 
 ---
 
-## 🔗 How to Use Webhooks & OAuth
+## 🔗 Webhooks & Zero-Downtime Strategy
 
-Since the physical URL changes, **NEVER** use the `trycloudflare.com` address for external services.
+Since the server physically restarts 4 times a day, we use **Hookdeck** to buffer webhooks so no data is lost.
 
-### 1. General Webhooks
-If a service (e.g., GitHub, Stripe) asks for a webhook URL, use:
-> `https://n8n-priyo.vercel.app/api/proxy/webhook/YOUR-WEBHOOK-ID`
+### 1. Setup Hookdeck (The Buffer)
+1.  Create a **Source** in Hookdeck (e.g., `n8n-universal`).
+2.  Create a **Destination** pointing to your Vercel Proxy:
+    * `https://n8n-priyo.vercel.app/api/proxy`
+3.  Copy your Hookdeck Source URL (e.g., `https://hkdk.events/xxxx`).
+4.  Add this URL to your `n8n.yml` under the `WEBHOOK_URL` environment variable.
 
-### 2. Google / OAuth Redirects
-If configuring a Google Cloud App or any OAuth service:
+### 2. Using Webhooks
+* **In the n8n Editor:** When you create a webhook node, it will automatically show your **Hookdeck URL**.
+* **External Services (GitHub/Stripe):** Always use the Hookdeck URL.
+    * *Server Online:* Hookdeck -> Vercel -> n8n (Instant).
+    * *Server Restarting:* Hookdeck -> **Queue (Wait)** -> Retry -> n8n (Delayed, but safe).
+
+### 3. Google / OAuth Redirects
+OAuth callbacks cannot be buffered, so they must go through Vercel directly:
 * **Authorized Redirect URI:** `https://n8n-priyo.vercel.app/api/proxy/rest/oauth2-credential/callback`
 
 ---
@@ -119,8 +125,8 @@ If configuring a Google Cloud App or any OAuth service:
 * **Fix:** Ignore it. The workflows are running. Refresh the page to see execution results.
 
 ### "401 Unauthorized"
-* **Cause:** Basic Auth is enabled for security.
-* **Fix:** Enter the Username and Password you set in your GitHub Secrets (`N8N_BASIC_AUTH_USER`).
+* **Cause:** Basic Auth is enabled.
+* **Fix:** Enter the Username/Password you set in GitHub Secrets.
 
 ### Server didn't restart automatically
 * **Fix:**
@@ -136,3 +142,4 @@ If configuring a Google Cloud App or any OAuth service:
 * **n8n:** Fair-code licensed (Sustainable Use License).
 * **Cloudflared:** MIT License.
 * **Rclone:** MIT License.
+* **Hookdeck:** Free tier used for webhook buffering.
