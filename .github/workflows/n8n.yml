@@ -42,10 +42,6 @@ jobs:
           chmod -R 777 n8n-data
 
       - name: Start n8n Container
-        env:
-          N8N_BASIC_AUTH_ACTIVE: "true"
-          N8N_BASIC_AUTH_USER: ${{ secrets.N8N_BASIC_AUTH_USER }}
-          N8N_BASIC_AUTH_PASSWORD: ${{ secrets.N8N_BASIC_AUTH_PASSWORD }}
         run: |
           docker run -d \
             --name n8n \
@@ -53,9 +49,6 @@ jobs:
             -v $(pwd)/n8n-data:/home/node/.n8n \
             -e N8N_PORT=5678 \
             -e N8N_SECURE_COOKIE=false \
-            -e N8N_BASIC_AUTH_ACTIVE=$N8N_BASIC_AUTH_ACTIVE \
-            -e N8N_BASIC_AUTH_USER=$N8N_BASIC_AUTH_USER \
-            -e N8N_BASIC_AUTH_PASSWORD=$N8N_BASIC_AUTH_PASSWORD \
             -e WEBHOOK_URL="https://hkdk.events/vrxi2l0hjpmr34" \
             -e VUE_APP_URL_BASE_API="https://n8n-priyo.vercel.app/api/proxy" \
             n8nio/n8n
@@ -98,7 +91,6 @@ jobs:
           echo "$TUNNEL_URL" > n8n_url.txt
           
           git config --global user.email "bot@n8n.com"
-          # --- CHANGED NAME HERE ---
           git config --global user.name "n8n-hosting-bot"
           
           git pull origin main --rebase || echo "No changes"
